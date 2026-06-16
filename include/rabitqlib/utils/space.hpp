@@ -800,6 +800,40 @@ inline float sve_dot_coeffs(const float* query, const float* coeffs, size_t dim)
 #endif
 }
 
+inline float sve_dot_u8_coeffs_16(const float* query, const uint8_t* coeffs) {
+#if defined(__ARM_FEATURE_SVE)
+    svbool_t pg8 = svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(16));
+    svbool_t pg4 = svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(4));
+
+    svuint8_t coeff_u8 = svld1_u8(pg8, coeffs);
+    svuint16_t coeff_u16_lo = svunpklo_u16(coeff_u8);
+    svuint16_t coeff_u16_hi = svunpkhi_u16(coeff_u8);
+
+    svuint32_t coeff_u32_0 = svunpklo_u32(coeff_u16_lo);
+    svuint32_t coeff_u32_1 = svunpkhi_u32(coeff_u16_lo);
+    svuint32_t coeff_u32_2 = svunpklo_u32(coeff_u16_hi);
+    svuint32_t coeff_u32_3 = svunpkhi_u32(coeff_u16_hi);
+
+    svfloat32_t coeff_f32_0 = svcvt_f32_u32_x(pg4, coeff_u32_0);
+    svfloat32_t coeff_f32_1 = svcvt_f32_u32_x(pg4, coeff_u32_1);
+    svfloat32_t coeff_f32_2 = svcvt_f32_u32_x(pg4, coeff_u32_2);
+    svfloat32_t coeff_f32_3 = svcvt_f32_u32_x(pg4, coeff_u32_3);
+
+    svfloat32_t sum = svdup_n_f32(0.0F);
+    sum = svmla_f32_m(pg4, sum, svld1_f32(pg4, query + 0), coeff_f32_0);
+    sum = svmla_f32_m(pg4, sum, svld1_f32(pg4, query + 4), coeff_f32_1);
+    sum = svmla_f32_m(pg4, sum, svld1_f32(pg4, query + 8), coeff_f32_2);
+    sum = svmla_f32_m(pg4, sum, svld1_f32(pg4, query + 12), coeff_f32_3);
+    return svaddv_f32(svptrue_b32(), sum);
+#else
+    double sum = 0.0;
+    for (size_t i = 0; i < 16; ++i) {
+        sum += static_cast<double>(query[i]) * static_cast<double>(coeffs[i]);
+    }
+    return static_cast<float>(sum);
+#endif
+}
+
 inline int decoded_top_bit(const uint8_t* top_bits, size_t idx) {
     size_t bit_pos = (8 * (idx % 8)) + (idx / 8);
     return (top_bits[bit_pos / 8] >> (bit_pos % 8)) & 0x1;
@@ -832,6 +866,23 @@ inline uint8_t decode_excode_6(const uint8_t* compact_code, size_t idx) {
 inline float ip16_fxu1_avx(
     const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
+#if defined(__ARM_FEATURE_SVE)
+    svbool_t pg16 = svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(16));
+    float result = 0.0F;
+    alignas(64) uint8_t coeffs[16];
+    for (size_t block = 0; block < dim; block += 16) {
+        uint16_t mask;
+        std::memcpy(&mask, compact_code, sizeof(mask));
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>((mask >> i) & 0x1);
+        }
+        svuint8_t coeff_vec = svld1_u8(pg16, coeffs);
+        svst1_u8(pg16, coeffs, coeff_vec);
+        result += sve_dot_u8_coeffs_16(query + block, coeffs);
+        compact_code += 2;
+    }
+    return result;
+#else
     double result = 0.0;
     for (size_t block = 0; block < dim; block += 16) {
         alignas(64) float coeffs[16];
@@ -844,11 +895,35 @@ inline float ip16_fxu1_avx(
         compact_code += 2;
     }
     return static_cast<float>(result);
+#endif
 }
 
 inline float ip64_fxu2_avx(
     const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
+#if defined(__ARM_FEATURE_SVE)
+    svbool_t pg16 = svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(16));
+    float result = 0.0F;
+    alignas(64) uint8_t coeffs[16];
+    for (size_t block = 0; block < dim; block += 64) {
+        svuint8_t packed = svld1_u8(pg16, compact_code);
+
+        svst1_u8(pg16, coeffs, svand_n_u8_x(pg16, packed, 0x03));
+        result += sve_dot_u8_coeffs_16(query + block, coeffs);
+
+        svst1_u8(pg16, coeffs, svand_n_u8_x(pg16, svlsr_n_u8_x(pg16, packed, 2), 0x03));
+        result += sve_dot_u8_coeffs_16(query + block + 16, coeffs);
+
+        svst1_u8(pg16, coeffs, svand_n_u8_x(pg16, svlsr_n_u8_x(pg16, packed, 4), 0x03));
+        result += sve_dot_u8_coeffs_16(query + block + 32, coeffs);
+
+        svst1_u8(pg16, coeffs, svand_n_u8_x(pg16, svlsr_n_u8_x(pg16, packed, 6), 0x03));
+        result += sve_dot_u8_coeffs_16(query + block + 48, coeffs);
+
+        compact_code += 16;
+    }
+    return result;
+#else
     double result = 0.0;
     for (size_t block = 0; block < dim; block += 64) {
         alignas(64) float coeffs[64];
@@ -859,11 +934,48 @@ inline float ip64_fxu2_avx(
         compact_code += 16;
     }
     return static_cast<float>(result);
+#endif
 }
 
 inline float ip64_fxu3_avx(
     const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
+#if defined(__ARM_FEATURE_SVE)
+    svbool_t pg16 = svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(16));
+    float result = 0.0F;
+    alignas(64) uint8_t coeffs[16];
+    for (size_t block = 0; block < dim; block += 64) {
+        svuint8_t packed = svld1_u8(pg16, compact_code);
+        const uint8_t* top_bits = compact_code + 16;
+
+        svst1_u8(pg16, coeffs, svand_n_u8_x(pg16, packed, 0x03));
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>(coeffs[i] | (decoded_top_bit(top_bits, i) << 2));
+        }
+        result += sve_dot_u8_coeffs_16(query + block, coeffs);
+
+        svst1_u8(pg16, coeffs, svand_n_u8_x(pg16, svlsr_n_u8_x(pg16, packed, 2), 0x03));
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>(coeffs[i] | (decoded_top_bit(top_bits, 16 + i) << 2));
+        }
+        result += sve_dot_u8_coeffs_16(query + block + 16, coeffs);
+
+        svst1_u8(pg16, coeffs, svand_n_u8_x(pg16, svlsr_n_u8_x(pg16, packed, 4), 0x03));
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>(coeffs[i] | (decoded_top_bit(top_bits, 32 + i) << 2));
+        }
+        result += sve_dot_u8_coeffs_16(query + block + 32, coeffs);
+
+        svst1_u8(pg16, coeffs, svand_n_u8_x(pg16, svlsr_n_u8_x(pg16, packed, 6), 0x03));
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>(coeffs[i] | (decoded_top_bit(top_bits, 48 + i) << 2));
+        }
+        result += sve_dot_u8_coeffs_16(query + block + 48, coeffs);
+
+        compact_code += 24;
+    }
+    return result;
+#else
     double result = 0.0;
     for (size_t block = 0; block < dim; block += 64) {
         alignas(64) float coeffs[64];
@@ -876,11 +988,27 @@ inline float ip64_fxu3_avx(
         compact_code += 24;
     }
     return static_cast<float>(result);
+#endif
 }
 
 inline float ip16_fxu4_avx(
     const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
+#if defined(__ARM_FEATURE_SVE)
+    float result = 0.0F;
+    alignas(64) uint8_t coeffs[16];
+    for (size_t block = 0; block < dim; block += 16) {
+        int64_t packed;
+        std::memcpy(&packed, compact_code, sizeof(packed));
+        for (size_t i = 0; i < 8; ++i) {
+            coeffs[i] = static_cast<uint8_t>((packed >> (8 * i)) & 0x0f);
+            coeffs[8 + i] = static_cast<uint8_t>((packed >> ((8 * i) + 4)) & 0x0f);
+        }
+        result += sve_dot_u8_coeffs_16(query + block, coeffs);
+        compact_code += 8;
+    }
+    return result;
+#else
     double result = 0.0;
     for (size_t block = 0; block < dim; block += 16) {
         alignas(64) float coeffs[16];
@@ -894,11 +1022,46 @@ inline float ip16_fxu4_avx(
         compact_code += 8;
     }
     return static_cast<float>(result);
+#endif
 }
 
 inline float ip64_fxu5_avx(
     const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
+#if defined(__ARM_FEATURE_SVE)
+    float result = 0.0F;
+    alignas(64) uint8_t coeffs[16];
+    for (size_t block = 0; block < dim; block += 64) {
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = compact_code[i] & 0x0f;
+        }
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>(coeffs[i] | (decoded_top_bit(compact_code + 32, i) << 4));
+        }
+        result += sve_dot_u8_coeffs_16(query + block, coeffs);
+
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>(((compact_code[i] >> 4) & 0x0f) |
+                                             (decoded_top_bit(compact_code + 32, 16 + i) << 4));
+        }
+        result += sve_dot_u8_coeffs_16(query + block + 16, coeffs);
+
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>((compact_code[16 + i] & 0x0f) |
+                                             (decoded_top_bit(compact_code + 32, 32 + i) << 4));
+        }
+        result += sve_dot_u8_coeffs_16(query + block + 32, coeffs);
+
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>(((compact_code[16 + i] >> 4) & 0x0f) |
+                                             (decoded_top_bit(compact_code + 32, 48 + i) << 4));
+        }
+        result += sve_dot_u8_coeffs_16(query + block + 48, coeffs);
+
+        compact_code += 40;
+    }
+    return result;
+#else
     double result = 0.0;
     for (size_t block = 0; block < dim; block += 64) {
         alignas(64) float coeffs[64];
@@ -909,11 +1072,42 @@ inline float ip64_fxu5_avx(
         compact_code += 40;
     }
     return static_cast<float>(result);
+#endif
 }
 
 inline float ip64_fxu6_avx(
     const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
+#if defined(__ARM_FEATURE_SVE)
+    float result = 0.0F;
+    alignas(64) uint8_t coeffs[16];
+    for (size_t block = 0; block < dim; block += 64) {
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = compact_code[i] & 0x3f;
+        }
+        result += sve_dot_u8_coeffs_16(query + block, coeffs);
+
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = compact_code[16 + i] & 0x3f;
+        }
+        result += sve_dot_u8_coeffs_16(query + block + 16, coeffs);
+
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = compact_code[32 + i] & 0x3f;
+        }
+        result += sve_dot_u8_coeffs_16(query + block + 32, coeffs);
+
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>(((compact_code[i] >> 6) & 0x03) |
+                                             (((compact_code[16 + i] >> 6) & 0x03) << 2) |
+                                             (((compact_code[32 + i] >> 6) & 0x03) << 4));
+        }
+        result += sve_dot_u8_coeffs_16(query + block + 48, coeffs);
+
+        compact_code += 48;
+    }
+    return result;
+#else
     double result = 0.0;
     for (size_t block = 0; block < dim; block += 64) {
         alignas(64) float coeffs[64];
@@ -924,11 +1118,46 @@ inline float ip64_fxu6_avx(
         compact_code += 48;
     }
     return static_cast<float>(result);
+#endif
 }
 
 inline float ip64_fxu7_avx(
     const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
+#if defined(__ARM_FEATURE_SVE)
+    float result = 0.0F;
+    alignas(64) uint8_t coeffs[16];
+    for (size_t block = 0; block < dim; block += 64) {
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>((compact_code[i] & 0x3f) |
+                                             (decoded_top_bit(compact_code + 48, i) << 6));
+        }
+        result += sve_dot_u8_coeffs_16(query + block, coeffs);
+
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>((compact_code[16 + i] & 0x3f) |
+                                             (decoded_top_bit(compact_code + 48, 16 + i) << 6));
+        }
+        result += sve_dot_u8_coeffs_16(query + block + 16, coeffs);
+
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>((compact_code[32 + i] & 0x3f) |
+                                             (decoded_top_bit(compact_code + 48, 32 + i) << 6));
+        }
+        result += sve_dot_u8_coeffs_16(query + block + 32, coeffs);
+
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<uint8_t>(((compact_code[i] >> 6) & 0x03) |
+                                             (((compact_code[16 + i] >> 6) & 0x03) << 2) |
+                                             (((compact_code[32 + i] >> 6) & 0x03) << 4) |
+                                             (decoded_top_bit(compact_code + 48, 48 + i) << 6));
+        }
+        result += sve_dot_u8_coeffs_16(query + block + 48, coeffs);
+
+        compact_code += 56;
+    }
+    return result;
+#else
     double result = 0.0;
     for (size_t block = 0; block < dim; block += 64) {
         alignas(64) float coeffs[64];
@@ -941,6 +1170,7 @@ inline float ip64_fxu7_avx(
         compact_code += 56;
     }
     return static_cast<float>(result);
+#endif
 }
 
 template <typename TF, typename TI>
@@ -1387,15 +1617,32 @@ inline float mask_ip_x0_q(const float* query, const uint64_t* data, size_t padde
     return result;
 #else
 #if defined(__ARM_FEATURE_SVE)
-    alignas(64) float coeffs[64];
+    alignas(64) uint32_t flags[16];
     float result = 0.0F;
     const size_t num_blk = padded_dim / 64;
+    svfloat32_t zero = svdup_n_f32(0.0F);
     for (size_t block = 0; block < num_blk; ++block) {
         uint64_t bits = reverse_bits_u64(data[block]);
-        for (size_t bit = 0; bit < 64; ++bit) {
-            coeffs[bit] = ((bits >> bit) & 1ULL) ? 1.0F : 0.0F;
+        const float* block_query = query + (block * 64);
+        for (size_t group = 0; group < 4; ++group) {
+            for (size_t lane = 0; lane < 16; ++lane) {
+                size_t bit = group * 16 + lane;
+                flags[lane] = ((bits >> bit) & 1ULL) ? 1U : 0U;
+            }
+
+            size_t offset = 0;
+            svfloat32_t partial = svdup_n_f32(0.0F);
+            while (offset < 16) {
+                svbool_t pg = svwhilelt_b32(static_cast<uint64_t>(offset), static_cast<uint64_t>(16));
+                svuint32_t flag_vec = svld1_u32(pg, flags + offset);
+                svbool_t pred = svcmpne_n_u32(pg, flag_vec, 0U);
+                svfloat32_t q = svld1_f32(pg, block_query + (group * 16) + offset);
+                svfloat32_t masked = svsel_f32(pred, q, zero);
+                partial = svadd_f32_m(pg, partial, masked);
+                offset += svcntw();
+            }
+            result += svaddv_f32(svptrue_b32(), partial);
         }
-        result += excode_ipimpl::sve_dot_coeffs(query + (block * 64), coeffs, 64);
     }
     return result;
 #else
