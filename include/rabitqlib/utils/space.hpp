@@ -4,6 +4,9 @@
 #include <emmintrin.h>
 #include <immintrin.h>
 #endif
+#if defined(__ARM_FEATURE_SVE)
+#include <arm_sve.h>
+#endif
 #include <omp.h>
 
 #include <array>
@@ -776,53 +779,168 @@ inline TF ip_fxi(const TF* __restrict__ vec0, const TI* __restrict__ vec1, size_
     return v0.dot(v1.template cast<TF>());
 }
 #else
+inline float sve_dot_coeffs(const float* query, const float* coeffs, size_t dim) {
+#if defined(__ARM_FEATURE_SVE)
+    size_t i = 0;
+    svfloat32_t sum = svdup_n_f32(0.0F);
+    while (i < dim) {
+        svbool_t pg = svwhilelt_b32(static_cast<uint64_t>(i), static_cast<uint64_t>(dim));
+        svfloat32_t q = svld1_f32(pg, query + i);
+        svfloat32_t c = svld1_f32(pg, coeffs + i);
+        sum = svmla_f32_m(pg, sum, q, c);
+        i += svcntw();
+    }
+    return svaddv_f32(svptrue_b32(), sum);
+#else
+    double sum = 0.0;
+    for (size_t i = 0; i < dim; ++i) {
+        sum += static_cast<double>(query[i]) * static_cast<double>(coeffs[i]);
+    }
+    return static_cast<float>(sum);
+#endif
+}
+
+inline int decoded_top_bit(const uint8_t* top_bits, size_t idx) {
+    size_t bit_pos = (8 * (idx % 8)) + (idx / 8);
+    return (top_bits[bit_pos / 8] >> (bit_pos % 8)) & 0x1;
+}
+
+inline uint8_t decode_excode_2(const uint8_t* compact_code, size_t idx) {
+    return static_cast<uint8_t>((compact_code[idx & 15] >> (2 * (idx >> 4))) & 0x3);
+}
+
+inline uint8_t decode_excode_5(const uint8_t* compact_code, size_t idx) {
+    size_t lane = idx & 15;
+    size_t group = idx >> 4;
+    size_t base = group >= 2 ? 16 : 0;
+    size_t shift = (group & 1) * 4;
+    return static_cast<uint8_t>(((compact_code[base + lane] >> shift) & 0x0f) |
+                                (decoded_top_bit(compact_code + 32, idx) << 4));
+}
+
+inline uint8_t decode_excode_6(const uint8_t* compact_code, size_t idx) {
+    size_t lane = idx & 15;
+    size_t group = idx >> 4;
+    if (group < 3) {
+        return static_cast<uint8_t>(compact_code[(group * 16) + lane] & 0x3f);
+    }
+    return static_cast<uint8_t>(((compact_code[lane] >> 6) & 0x03) |
+                                (((compact_code[16 + lane] >> 6) & 0x03) << 2) |
+                                (((compact_code[32 + lane] >> 6) & 0x03) << 4));
+}
+
 inline float ip16_fxu1_avx(
-    const float* __restrict__, const uint8_t* __restrict__, size_t
+    const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
-    std::cerr << "Excode AVX kernels are not available on this platform\n";
-    exit(1);
+    double result = 0.0;
+    for (size_t block = 0; block < dim; block += 16) {
+        alignas(64) float coeffs[16];
+        uint16_t mask;
+        std::memcpy(&mask, compact_code, sizeof(mask));
+        for (size_t i = 0; i < 16; ++i) {
+            coeffs[i] = static_cast<float>((mask >> i) & 0x1);
+        }
+        result += static_cast<double>(sve_dot_coeffs(query + block, coeffs, 16));
+        compact_code += 2;
+    }
+    return static_cast<float>(result);
 }
 
 inline float ip64_fxu2_avx(
-    const float* __restrict__, const uint8_t* __restrict__, size_t
+    const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
-    std::cerr << "Excode AVX kernels are not available on this platform\n";
-    exit(1);
+    double result = 0.0;
+    for (size_t block = 0; block < dim; block += 64) {
+        alignas(64) float coeffs[64];
+        for (size_t idx = 0; idx < 64; ++idx) {
+            coeffs[idx] = static_cast<float>(decode_excode_2(compact_code, idx));
+        }
+        result += static_cast<double>(sve_dot_coeffs(query + block, coeffs, 64));
+        compact_code += 16;
+    }
+    return static_cast<float>(result);
 }
 
 inline float ip64_fxu3_avx(
-    const float* __restrict__, const uint8_t* __restrict__, size_t
+    const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
-    std::cerr << "Excode AVX kernels are not available on this platform\n";
-    exit(1);
+    double result = 0.0;
+    for (size_t block = 0; block < dim; block += 64) {
+        alignas(64) float coeffs[64];
+        for (size_t idx = 0; idx < 64; ++idx) {
+            uint8_t value = static_cast<uint8_t>(decode_excode_2(compact_code, idx) |
+                                                 (decoded_top_bit(compact_code + 16, idx) << 2));
+            coeffs[idx] = static_cast<float>(value);
+        }
+        result += static_cast<double>(sve_dot_coeffs(query + block, coeffs, 64));
+        compact_code += 24;
+    }
+    return static_cast<float>(result);
 }
 
 inline float ip16_fxu4_avx(
-    const float* __restrict__, const uint8_t* __restrict__, size_t
+    const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
-    std::cerr << "Excode AVX kernels are not available on this platform\n";
-    exit(1);
+    double result = 0.0;
+    for (size_t block = 0; block < dim; block += 16) {
+        alignas(64) float coeffs[16];
+        int64_t packed;
+        std::memcpy(&packed, compact_code, sizeof(packed));
+        for (size_t i = 0; i < 8; ++i) {
+            coeffs[i] = static_cast<float>((packed >> (8 * i)) & 0x0f);
+            coeffs[8 + i] = static_cast<float>((packed >> ((8 * i) + 4)) & 0x0f);
+        }
+        result += static_cast<double>(sve_dot_coeffs(query + block, coeffs, 16));
+        compact_code += 8;
+    }
+    return static_cast<float>(result);
 }
 
 inline float ip64_fxu5_avx(
-    const float* __restrict__, const uint8_t* __restrict__, size_t
+    const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
-    std::cerr << "Excode AVX kernels are not available on this platform\n";
-    exit(1);
+    double result = 0.0;
+    for (size_t block = 0; block < dim; block += 64) {
+        alignas(64) float coeffs[64];
+        for (size_t idx = 0; idx < 64; ++idx) {
+            coeffs[idx] = static_cast<float>(decode_excode_5(compact_code, idx));
+        }
+        result += static_cast<double>(sve_dot_coeffs(query + block, coeffs, 64));
+        compact_code += 40;
+    }
+    return static_cast<float>(result);
 }
 
 inline float ip64_fxu6_avx(
-    const float* __restrict__, const uint8_t* __restrict__, size_t
+    const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
-    std::cerr << "Excode AVX kernels are not available on this platform\n";
-    exit(1);
+    double result = 0.0;
+    for (size_t block = 0; block < dim; block += 64) {
+        alignas(64) float coeffs[64];
+        for (size_t idx = 0; idx < 64; ++idx) {
+            coeffs[idx] = static_cast<float>(decode_excode_6(compact_code, idx));
+        }
+        result += static_cast<double>(sve_dot_coeffs(query + block, coeffs, 64));
+        compact_code += 48;
+    }
+    return static_cast<float>(result);
 }
 
 inline float ip64_fxu7_avx(
-    const float* __restrict__, const uint8_t* __restrict__, size_t
+    const float* __restrict__ query, const uint8_t* __restrict__ compact_code, size_t dim
 ) {
-    std::cerr << "Excode AVX kernels are not available on this platform\n";
-    exit(1);
+    double result = 0.0;
+    for (size_t block = 0; block < dim; block += 64) {
+        alignas(64) float coeffs[64];
+        for (size_t idx = 0; idx < 64; ++idx) {
+            uint8_t value = static_cast<uint8_t>(decode_excode_6(compact_code, idx) |
+                                                 (decoded_top_bit(compact_code + 48, idx) << 6));
+            coeffs[idx] = static_cast<float>(value);
+        }
+        result += static_cast<double>(sve_dot_coeffs(query + block, coeffs, 64));
+        compact_code += 56;
+    }
+    return static_cast<float>(result);
 }
 
 template <typename TF, typename TI>
@@ -964,8 +1082,49 @@ static inline void new_transpose_bin(
         q += 64;
     }
 #else
-    std::cerr << "AVX512 or AVX2 is required for new transpose bin\n";
-    exit(1);
+#if defined(__ARM_FEATURE_SVE)
+    alignas(64) uint16_t flags[64];
+    svuint16_t ones = svdup_n_u16(1);
+    svuint16_t zeros = svdup_n_u16(0);
+
+    for (size_t i = 0; i < padded_dim; i += 64) {
+        for (size_t bit_idx = 0; bit_idx < b_query; ++bit_idx) {
+            size_t lane = 0;
+            while (lane < 64) {
+                svbool_t pg = svwhilelt_b16(static_cast<uint64_t>(lane), static_cast<uint64_t>(64));
+                svuint16_t vals = svld1_u16(pg, q + lane);
+                svbool_t match = svcmpne_n_u16(pg, svand_n_u16_x(pg, vals, static_cast<uint16_t>(1U << bit_idx)), 0);
+                svuint16_t out = svsel_u16(match, ones, zeros);
+                svst1_u16(pg, flags + lane, out);
+                lane += svcnth();
+            }
+
+            uint64_t mask = 0;
+            for (size_t lane = 0; lane < 64; ++lane) {
+                if (flags[lane] != 0) {
+                    mask |= 1ULL << (63 - lane);
+                }
+            }
+            tq[bit_idx] = mask;
+        }
+        tq += b_query;
+        q += 64;
+    }
+#else
+    for (size_t i = 0; i < padded_dim; i += 64) {
+        for (size_t bit_idx = 0; bit_idx < b_query; ++bit_idx) {
+            uint64_t mask = 0;
+            for (size_t lane = 0; lane < 64; ++lane) {
+                if ((q[lane] >> bit_idx) & 0x1U) {
+                    mask |= 1ULL << (63 - lane);
+                }
+            }
+            tq[bit_idx] = mask;
+        }
+        tq += b_query;
+        q += 64;
+    }
+#endif
 #endif
 }
 
@@ -1039,8 +1198,69 @@ static inline void new_transpose_bin_512(
         tq += num_chunks * b_query;
     }
 #else
-    std::cerr << "AVX512BW or AVX2 is required for new_transpose_bin_512\n";
-    exit(1);
+#if defined(__ARM_FEATURE_SVE)
+    alignas(64) uint8_t flags[64];
+    svuint8_t ones = svdup_n_u8(1);
+    svuint8_t zeros = svdup_n_u8(0);
+
+    for (size_t i = 0; i < padded_dim;) {
+        size_t block_size = 512;
+        if (i + 512 > padded_dim) {
+            block_size = padded_dim - i;
+        }
+        size_t num_chunks = block_size / 64;
+
+        for (size_t k = 0; k < num_chunks; ++k) {
+            const uint8_t* current_q = q + i + (k * 64);
+            for (size_t bit_idx = 0; bit_idx < b_query; ++bit_idx) {
+                size_t lane = 0;
+                while (lane < 64) {
+                    svbool_t pg = svwhilelt_b8(static_cast<uint64_t>(lane), static_cast<uint64_t>(64));
+                    svuint8_t vals = svld1_u8(pg, current_q + lane);
+                    svbool_t match = svcmpne_n_u8(pg, svand_n_u8_x(pg, vals, static_cast<uint8_t>(1U << bit_idx)), 0);
+                    svuint8_t out = svsel_u8(match, ones, zeros);
+                    svst1_u8(pg, flags + lane, out);
+                    lane += svcntb();
+                }
+
+                uint64_t mask = 0;
+                for (size_t lane_idx = 0; lane_idx < 64; ++lane_idx) {
+                    if (flags[lane_idx] != 0) {
+                        mask |= 1ULL << (63 - lane_idx);
+                    }
+                }
+                tq[bit_idx * num_chunks + k] = mask;
+            }
+        }
+
+        i += block_size;
+        tq += num_chunks * b_query;
+    }
+#else
+    for (size_t i = 0; i < padded_dim;) {
+        size_t block_size = 512;
+        if (i + 512 > padded_dim) {
+            block_size = padded_dim - i;
+        }
+        size_t num_chunks = block_size / 64;
+
+        for (size_t k = 0; k < num_chunks; ++k) {
+            const uint8_t* current_q = q + i + (k * 64);
+            for (size_t bit_idx = 0; bit_idx < b_query; ++bit_idx) {
+                uint64_t mask = 0;
+                for (size_t lane = 0; lane < 64; ++lane) {
+                    if ((current_q[lane] >> bit_idx) & 0x1U) {
+                        mask |= 1ULL << (63 - lane);
+                    }
+                }
+                tq[bit_idx * num_chunks + k] = mask;
+            }
+        }
+
+        i += block_size;
+        tq += num_chunks * b_query;
+    }
+#endif
 #endif
 }
 
@@ -1094,11 +1314,10 @@ inline float mask_ip_x0_q_old(const float* query, const uint64_t* data, size_t p
 }
 
 inline float mask_ip_x0_q(const float* query, const uint64_t* data, size_t padded_dim) {
+#if defined(__AVX512F__)
     const size_t num_blk = padded_dim / 64;
     const uint64_t* it_data = data;
     const float* it_query = query;
-// Easier
-#if defined(__AVX512F__)
 
     //    __m512 sum0 = _mm512_setzero_ps();
     //    __m512 sum1 = _mm512_setzero_ps();
@@ -1133,6 +1352,9 @@ inline float mask_ip_x0_q(const float* query, const uint64_t* data, size_t padde
     //    __m512 sum = _mm512_add_ps(_mm512_add_ps(sum0, sum1), _mm512_add_ps(sum2, sum3));
     return _mm512_reduce_add_ps(sum);
 #elif defined(__AVX2__)
+    const size_t num_blk = padded_dim / 64;
+    const uint64_t* it_data = data;
+    const float* it_query = query;
 
     __m256 sum = _mm256_setzero_ps();
 
@@ -1164,10 +1386,22 @@ inline float mask_ip_x0_q(const float* query, const uint64_t* data, size_t padde
     }
     return result;
 #else
-    std::cerr << "AVX512 or AVX2 is required for mask ip x0 q\n";
-    exit(1);
+#if defined(__ARM_FEATURE_SVE)
+    alignas(64) float coeffs[64];
+    float result = 0.0F;
+    const size_t num_blk = padded_dim / 64;
+    for (size_t block = 0; block < num_blk; ++block) {
+        uint64_t bits = reverse_bits_u64(data[block]);
+        for (size_t bit = 0; bit < 64; ++bit) {
+            coeffs[bit] = ((bits >> bit) & 1ULL) ? 1.0F : 0.0F;
+        }
+        result += excode_ipimpl::sve_dot_coeffs(query + (block * 64), coeffs, 64);
+    }
+    return result;
+#else
+    return mask_ip_x0_q_old(query, data, padded_dim);
 #endif
-    return 0.0F;
+#endif
 }
 
 inline float ip_x0_q(

@@ -26,8 +26,16 @@ inline void packing_1bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_compact += 2;
     }
 #else
-    std::cerr << "Current only support AVX512F and AVX2 for packing excode\n" << std::flush;
-    exit(1);
+    for (size_t j = 0; j < dim; j += 16) {
+        uint16_t code = 0;
+        for (size_t i = 0; i < 16; ++i) {
+            code |= static_cast<uint16_t>(o_raw[i] & 0x1) << i;
+        }
+        std::memcpy(o_compact, &code, sizeof(uint16_t));
+
+        o_raw += 16;
+        o_compact += 2;
+    }
 #endif
 }
 
@@ -54,8 +62,17 @@ inline void packing_2bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_compact += 16;
     }
 #else
-    std::cerr << "Current only support AVX512F and AVX2 for packing excode\n" << std::flush;
-    exit(1);
+    for (size_t j = 0; j < dim; j += 64) {
+        for (size_t i = 0; i < 16; ++i) {
+            o_compact[i] = static_cast<uint8_t>(
+                ((o_raw[i] & 0x3) << 0) | ((o_raw[i + 16] & 0x3) << 2) |
+                ((o_raw[i + 32] & 0x3) << 4) | ((o_raw[i + 48] & 0x3) << 6)
+            );
+        }
+
+        o_raw += 64;
+        o_compact += 16;
+    }
 #endif
 }
 
@@ -102,8 +119,25 @@ inline void packing_3bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_compact += 8;
     }
 #else
-    std::cerr << "Current only support AVX512F and AVX2 for packing excode\n" << std::flush;
-    exit(1);
+    for (size_t d = 0; d < dim; d += 64) {
+        for (size_t i = 0; i < 16; ++i) {
+            o_compact[i] = static_cast<uint8_t>(
+                ((o_raw[i] & 0x3) << 0) | ((o_raw[i + 16] & 0x3) << 2) |
+                ((o_raw[i + 32] & 0x3) << 4) | ((o_raw[i + 48] & 0x3) << 6)
+            );
+        }
+        o_compact += 16;
+
+        int64_t top_bit = 0;
+        for (size_t idx = 0; idx < 64; ++idx) {
+            int64_t bit = static_cast<int64_t>((o_raw[idx] >> 2) & 0x1);
+            top_bit |= bit << ((8 * (idx % 8)) + (idx / 8));
+        }
+        std::memcpy(o_compact, &top_bit, sizeof(int64_t));
+
+        o_raw += 64;
+        o_compact += 8;
+    }
 #endif
 }
 
@@ -127,8 +161,17 @@ inline void packing_4bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_compact += 8;
     }
 #else
-    std::cerr << "Current only support AVX512F and AVX2 for packing excode\n" << std::flush;
-    exit(1);
+    for (size_t j = 0; j < dim; j += 16) {
+        int64_t compact = 0;
+        for (size_t i = 0; i < 8; ++i) {
+            compact |= static_cast<int64_t>(o_raw[i] & 0x0f) << (8 * i);
+            compact |= static_cast<int64_t>(o_raw[i + 8] & 0x0f) << ((8 * i) + 4);
+        }
+        *reinterpret_cast<int64_t*>(o_compact) = compact;
+
+        o_raw += 16;
+        o_compact += 8;
+    }
 #endif
 }
 
@@ -172,8 +215,25 @@ inline void packing_5bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_compact += 8;
     }
 #else
-    std::cerr << "Current only support AVX512F and AVX2 for packing excode\n" << std::flush;
-    exit(1);
+    for (size_t j = 0; j < dim; j += 64) {
+        for (size_t i = 0; i < 16; ++i) {
+            o_compact[i] = static_cast<uint8_t>(((o_raw[i] & 0x0f) << 0) |
+                                                ((o_raw[i + 16] & 0x0f) << 4));
+            o_compact[i + 16] = static_cast<uint8_t>(((o_raw[i + 32] & 0x0f) << 0) |
+                                                     ((o_raw[i + 48] & 0x0f) << 4));
+        }
+        o_compact += 32;
+
+        int64_t top_bit = 0;
+        for (size_t idx = 0; idx < 64; ++idx) {
+            int64_t bit = static_cast<int64_t>((o_raw[idx] >> 4) & 0x1);
+            top_bit |= bit << ((8 * (idx % 8)) + (idx / 8));
+        }
+        std::memcpy(o_compact, &top_bit, sizeof(int64_t));
+
+        o_raw += 64;
+        o_compact += 8;
+    }
 #endif
 }
 
@@ -210,8 +270,17 @@ inline void packing_6bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_raw += 64;
     }
 #else
-    std::cerr << "Current only support AVX512F and AVX2 for packing excode\n" << std::flush;
-    exit(1);
+    for (size_t d = 0; d < dim; d += 64) {
+        for (size_t i = 0; i < 16; ++i) {
+            o_compact[i] = static_cast<uint8_t>((o_raw[i] & 0x3f) | ((o_raw[i + 48] & 0x03) << 6));
+            o_compact[i + 16] =
+                static_cast<uint8_t>((o_raw[i + 16] & 0x3f) | (((o_raw[i + 48] >> 2) & 0x03) << 6));
+            o_compact[i + 32] =
+                static_cast<uint8_t>((o_raw[i + 32] & 0x3f) | (((o_raw[i + 48] >> 4) & 0x03) << 6));
+        }
+        o_compact += 48;
+        o_raw += 64;
+    }
 #endif
 }
 
@@ -261,8 +330,26 @@ inline void packing_7bit_excode(const uint8_t* o_raw, uint8_t* o_compact, size_t
         o_raw += 64;
     }
 #else
-    std::cerr << "Current only support AVX512F and AVX2 for packing excode\n" << std::flush;
-    exit(1);
+    for (size_t d = 0; d < dim; d += 64) {
+        for (size_t i = 0; i < 16; ++i) {
+            o_compact[i] = static_cast<uint8_t>((o_raw[i] & 0x3f) | ((o_raw[i + 48] & 0x03) << 6));
+            o_compact[i + 16] =
+                static_cast<uint8_t>((o_raw[i + 16] & 0x3f) | (((o_raw[i + 48] >> 2) & 0x03) << 6));
+            o_compact[i + 32] =
+                static_cast<uint8_t>((o_raw[i + 32] & 0x3f) | (((o_raw[i + 48] >> 4) & 0x03) << 6));
+        }
+        o_compact += 48;
+
+        int64_t top_bit = 0;
+        for (size_t idx = 0; idx < 64; ++idx) {
+            int64_t bit = static_cast<int64_t>((o_raw[idx] >> 6) & 0x1);
+            top_bit |= bit << ((8 * (idx % 8)) + (idx / 8));
+        }
+        std::memcpy(o_compact, &top_bit, sizeof(int64_t));
+
+        o_compact += 8;
+        o_raw += 64;
+    }
 #endif
 }
 

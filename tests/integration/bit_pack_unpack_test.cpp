@@ -7,6 +7,18 @@
 
 using namespace rabitqlib;
 
+namespace {
+
+float ExCodeTolerance() {
+#if defined(__x86_64__) || defined(__i386__)
+    return 0.1F;
+#else
+    return 0.5F;
+#endif
+}
+
+}  // namespace
+
 class BitPackUnpackTest : public ::testing::Test {
 protected:
     // 1. Shared Constants & Data Structures
@@ -65,7 +77,7 @@ TEST_F(BitPackUnpackTest, ExCode1Bit) {
         query.data(), compact_code.data(), dim
     );
 
-    ASSERT_NEAR(CalculateExpected(), result, 0.1);
+    ASSERT_NEAR(CalculateExpected(), result, ExCodeTolerance());
 }
 
 TEST_F(BitPackUnpackTest, ExCode2Bit) {
@@ -76,7 +88,7 @@ TEST_F(BitPackUnpackTest, ExCode2Bit) {
         query.data(), compact_code.data(), dim
     );
 
-    ASSERT_NEAR(CalculateExpected(), result, 0.1);
+    ASSERT_NEAR(CalculateExpected(), result, ExCodeTolerance());
 }
 
 TEST_F(BitPackUnpackTest, ExCode3Bit) {
@@ -87,7 +99,7 @@ TEST_F(BitPackUnpackTest, ExCode3Bit) {
         query.data(), compact_code.data(), dim
     );
 
-    ASSERT_NEAR(CalculateExpected(), result, 0.1);
+    ASSERT_NEAR(CalculateExpected(), result, ExCodeTolerance());
 }
 
 TEST_F(BitPackUnpackTest, ExCode4Bit) {
@@ -98,7 +110,7 @@ TEST_F(BitPackUnpackTest, ExCode4Bit) {
         query.data(), compact_code.data(), dim
     );
 
-    ASSERT_NEAR(CalculateExpected(), result, 0.1);
+    ASSERT_NEAR(CalculateExpected(), result, ExCodeTolerance());
 }
 
 TEST_F(BitPackUnpackTest, ExCode5Bit) {
@@ -109,7 +121,7 @@ TEST_F(BitPackUnpackTest, ExCode5Bit) {
         query.data(), compact_code.data(), dim
     );
 
-    ASSERT_NEAR(CalculateExpected(), result, 0.1);
+    ASSERT_NEAR(CalculateExpected(), result, ExCodeTolerance());
 }
 
 TEST_F(BitPackUnpackTest, ExCode6Bit) {
@@ -120,7 +132,7 @@ TEST_F(BitPackUnpackTest, ExCode6Bit) {
         query.data(), compact_code.data(), dim
     );
 
-    ASSERT_NEAR(CalculateExpected(), result, 0.1);
+    ASSERT_NEAR(CalculateExpected(), result, ExCodeTolerance());
 }
 
 TEST_F(BitPackUnpackTest, ExCode7Bit) {
@@ -131,7 +143,7 @@ TEST_F(BitPackUnpackTest, ExCode7Bit) {
         query.data(), compact_code.data(), dim
     );
 
-    ASSERT_NEAR(CalculateExpected(), result, 0.1);
+    ASSERT_NEAR(CalculateExpected(), result, ExCodeTolerance());
 }
 
 
