@@ -5,12 +5,31 @@ project(RaBitQLib LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+include(CheckCXXCompilerFlag)
 
 include_directories(${PROJECT_SOURCE_DIR}/include)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-SET(CMAKE_CXX_FLAGS  "-Wall -Ofast -Wextra -lrt -march=native -fpic -fopenmp -ftree-vectorize -fexceptions")
+option(RABITQ_ENABLE_SVE "Enable Arm SVE/SVE2 kernels" ON)
+
+SET(CMAKE_CXX_FLAGS  "-Wall -Ofast -Wextra -lrt -fpic -fopenmp -ftree-vectorize -fexceptions")
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    if(RABITQ_ENABLE_SVE)
+        add_compile_definitions(RABITQ_USE_SVE)
+        check_cxx_compiler_flag("-mcpu=native" RABITQ_HAS_MCPU_NATIVE)
+        if(RABITQ_HAS_MCPU_NATIVE)
+            add_compile_options(-mcpu=native)
+        else()
+            add_compile_options(-march=armv8.6-a+sve+sve2)
+        endif()
+    else()
+        add_compile_options(-march=native)
+    endif()
+else()
+    add_compile_options(-march=native)
+endif()
 
 add_subdirectory(sample/cpp)
 

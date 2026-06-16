@@ -1,7 +1,10 @@
 #pragma once
 
+#if defined(__AVX512BW__) || defined(__AVX2__)
 #include <immintrin.h>
+#endif
 
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -25,9 +28,17 @@ inline void transfer_lut_hacc(const uint16_t* lut, size_t dim, uint8_t* hc_lut) 
 #elif defined(__AVX2__)
         constexpr size_t kRegBits = 256;
 #else
-        static_assert(false, "At least requried AVX2 for using fastscan\n");
-        exit(1);
+    uint8_t* fill_lo = hc_lut + (i * 32);
+    uint8_t* fill_hi = fill_lo + 16;
+    for (size_t j = 0; j < 16; ++j) {
+        int tmp = lut[j];
+        fill_lo[j] = static_cast<uint8_t>(tmp);
+        fill_hi[j] = static_cast<uint8_t>(tmp >> 8);
+    }
+    lut += 16;
+    continue;
 #endif
+#if defined(__AVX512BW__) || defined(__AVX2__)
         constexpr size_t kLaneBits = 128;
         constexpr size_t kByteBits = 8;
 
@@ -57,6 +68,7 @@ inline void transfer_lut_hacc(const uint16_t* lut, size_t dim, uint8_t* hc_lut) 
         }
 #endif
         lut += 16;
+#endif
     }
 }
 
@@ -215,8 +227,31 @@ inline void accumulate_hacc(
     _mm256_storeu_si256((__m256i*)(accu_res + 16), res[2]);
     _mm256_storeu_si256((__m256i*)(accu_res + 24), res[3]);
 #else
-    std::cerr << "AVX512 or AVX2 required for using fastscan\n";
-    exit(1);
+    for (size_t i = 0; i < kBatchSize; ++i) {
+        accu_res[i] = 0;
+    }
+
+    size_t num_codebook = dim >> 2;
+    for (size_t m = 0; m < num_codebook; ++m) {
+        const uint8_t* code_ptr = codes + (m * 16);
+        const uint8_t* lut_lo = hc_lut + (m * 32);
+        const uint8_t* lut_hi = lut_lo + 16;
+
+        for (size_t j = 0; j < 16; ++j) {
+            uint8_t packed_code = code_ptr[j];
+            uint8_t lo_idx = packed_code & 0x0f;
+            uint8_t hi_idx = packed_code >> 4;
+            size_t permuted_index = static_cast<size_t>(kPerm0[j]);
+
+            int32_t lo_val = static_cast<int32_t>(lut_lo[lo_idx]) |
+                             (static_cast<int32_t>(lut_hi[lo_idx]) << 8);
+            int32_t hi_val = static_cast<int32_t>(lut_lo[hi_idx]) |
+                             (static_cast<int32_t>(lut_hi[hi_idx]) << 8);
+
+            accu_res[permuted_index] += lo_val;
+            accu_res[permuted_index + 16] += hi_val;
+        }
+    }
 #endif
 }
 }  // namespace rabitqlib::fastscan

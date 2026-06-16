@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 #include "rabitqlib/defines.hpp"
@@ -136,7 +137,7 @@ template <typename T, typename TA = uint16_t>
 inline void qg_batch_estdist(
     const char* batch_data, const BatchQuery<T>& q_obj, size_t padded_dim, T* est_distance
 ) {
-    std::vector<TA> accu_res(fastscan::kBatchSize);
+    alignas(64) std::array<TA, fastscan::kBatchSize> accu_res{};
 
     ConstQGBatchDataMap<T> cur_batch(batch_data, padded_dim);
 

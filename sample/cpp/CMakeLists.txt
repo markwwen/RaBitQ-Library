@@ -1,4 +1,4 @@
-set (CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/sample)
 
 add_executable(symqg_indexing symqg_indexing.cpp)
 add_executable(symqg_querying symqg_querying.cpp)

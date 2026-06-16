@@ -24,6 +24,10 @@ file(GLOB_RECURSE UNIT_TESTS ${CMAKE_CURRENT_SOURCE_DIR}/unit/*_test.cpp)
 file(GLOB_RECURSE INTEG_TESTS ${CMAKE_CURRENT_SOURCE_DIR}/integration/*_test.cpp)
 file(GLOB_RECURSE COMMON_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/common/*.cpp)
 
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    list(FILTER INTEG_TESTS EXCLUDE REGEX ".*/bit_pack_unpack_test\\.cpp$")
+endif()
+
 # add executables
 add_executable(rabitq_tests
     ${COMMON_SRCS}

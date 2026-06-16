@@ -10,7 +10,9 @@
 #include <random>
 
 #include "rabitqlib/defines.hpp"
+#if defined(__x86_64__) || defined(__i386__)
 #include "rabitqlib/utils/fht_avx.hpp"
+#endif
 #include "rabitqlib/utils/space.hpp"
 #include "rabitqlib/utils/tools.hpp"
 
@@ -40,6 +42,30 @@ class Rotator {
 };
 
 namespace rotator_impl {
+
+#if !defined(__x86_64__) && !defined(__i386__)
+inline void scalar_fht(float* buf, int log_n) {
+    size_t n = static_cast<size_t>(1) << log_n;
+    for (size_t len = 1; len < n; len <<= 1) {
+        size_t block = len << 1;
+        for (size_t i = 0; i < n; i += block) {
+            for (size_t j = 0; j < len; ++j) {
+                float x = buf[i + j];
+                float y = buf[i + j + len];
+                buf[i + j] = x + y;
+                buf[i + j + len] = x - y;
+            }
+        }
+    }
+}
+
+inline void helper_float_6(float* buf) { scalar_fht(buf, 6); }
+inline void helper_float_7(float* buf) { scalar_fht(buf, 7); }
+inline void helper_float_8(float* buf) { scalar_fht(buf, 8); }
+inline void helper_float_9(float* buf) { scalar_fht(buf, 9); }
+inline void helper_float_10(float* buf) { scalar_fht(buf, 10); }
+inline void helper_float_11(float* buf) { scalar_fht(buf, 11); }
+#endif
 
 // get padding requirement for different rotator
 inline size_t padding_requirement(size_t dim, RotatorType type) {
@@ -185,8 +211,12 @@ static inline void flip_sign(const uint8_t* flip, float* data, size_t dim) {
         }
     }
 #else
-    std:: cerr << "Sign flip requires AVX512 or AVX2 support!\n";
-    exit(1);
+    for (size_t i = 0; i < dim; ++i) {
+        uint8_t byte = flip[i / 8];
+        if ((byte >> (i % 8)) & 0x1) {
+            data[i] = -data[i];
+        }
+    }
 #endif
 }
 
@@ -308,8 +338,12 @@ class FhtKacRotator : public Rotator<float> {
             _mm256_storeu_ps(&data[i + (len / 2)], new_y);
         }
     #else
-        std:: cerr << "FhtKacRotator requires AVX512 or AVX2 support!\n";
-        exit(1);
+        for (size_t i = 0; i < len / 2; ++i) {
+            float x = data[i];
+            float y = data[i + (len / 2)];
+            data[i] = x + y;
+            data[i + (len / 2)] = x - y;
+        }
     #endif
     }
 

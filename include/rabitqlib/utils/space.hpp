@@ -1,7 +1,9 @@
 #pragma once
 
+#if defined(__x86_64__) || defined(__i386__)
 #include <emmintrin.h>
 #include <immintrin.h>
+#endif
 #include <omp.h>
 
 #include <array>
@@ -271,6 +273,8 @@ inline PID exact_nn(
 }
 
 namespace excode_ipimpl {
+
+#if defined(__x86_64__) || defined(__i386__)
 
 #if defined(__AVX2__)
 // helper function for AVX2 inner product
@@ -771,6 +775,66 @@ inline TF ip_fxi(const TF* __restrict__ vec0, const TI* __restrict__ vec1, size_
     ConstVectorMap<TI> v1(vec1, dim);
     return v0.dot(v1.template cast<TF>());
 }
+#else
+inline float ip16_fxu1_avx(
+    const float* __restrict__, const uint8_t* __restrict__, size_t
+) {
+    std::cerr << "Excode AVX kernels are not available on this platform\n";
+    exit(1);
+}
+
+inline float ip64_fxu2_avx(
+    const float* __restrict__, const uint8_t* __restrict__, size_t
+) {
+    std::cerr << "Excode AVX kernels are not available on this platform\n";
+    exit(1);
+}
+
+inline float ip64_fxu3_avx(
+    const float* __restrict__, const uint8_t* __restrict__, size_t
+) {
+    std::cerr << "Excode AVX kernels are not available on this platform\n";
+    exit(1);
+}
+
+inline float ip16_fxu4_avx(
+    const float* __restrict__, const uint8_t* __restrict__, size_t
+) {
+    std::cerr << "Excode AVX kernels are not available on this platform\n";
+    exit(1);
+}
+
+inline float ip64_fxu5_avx(
+    const float* __restrict__, const uint8_t* __restrict__, size_t
+) {
+    std::cerr << "Excode AVX kernels are not available on this platform\n";
+    exit(1);
+}
+
+inline float ip64_fxu6_avx(
+    const float* __restrict__, const uint8_t* __restrict__, size_t
+) {
+    std::cerr << "Excode AVX kernels are not available on this platform\n";
+    exit(1);
+}
+
+inline float ip64_fxu7_avx(
+    const float* __restrict__, const uint8_t* __restrict__, size_t
+) {
+    std::cerr << "Excode AVX kernels are not available on this platform\n";
+    exit(1);
+}
+
+template <typename TF, typename TI>
+inline TF ip_fxi(const TF* __restrict__ vec0, const TI* __restrict__ vec1, size_t dim) {
+    static_assert(std::is_floating_point_v<TF>, "TF must be an floating type");
+    static_assert(std::is_integral_v<TI>, "TI must be an integeral type");
+
+    ConstVectorMap<TF> v0(vec0, dim);
+    ConstVectorMap<TI> v1(vec1, dim);
+    return v0.dot(v1.template cast<TF>());
+}
+#endif
 }  // namespace excode_ipimpl
 
 using ex_ipfunc = float (*)(const float*, const uint8_t*, size_t);
@@ -981,6 +1045,7 @@ static inline void new_transpose_bin_512(
 }
 
 inline float mask_ip_x0_q_old(const float* query, const uint64_t* data, size_t padded_dim) {
+#if defined(__AVX512F__)
     auto num_blk = padded_dim / 64;
     const auto* it_data = data;
     const auto* it_query = query;
@@ -1012,6 +1077,20 @@ inline float mask_ip_x0_q_old(const float* query, const uint64_t* data, size_t p
         it_query += 64;
     }
     return _mm512_reduce_add_ps(sum);
+#else
+    float result = 0.0F;
+    const size_t num_blk = padded_dim / 64;
+    for (size_t block = 0; block < num_blk; ++block) {
+        uint64_t bits = reverse_bits_u64(data[block]);
+        const float* block_query = query + (block * 64);
+        for (size_t bit = 0; bit < 64; ++bit) {
+            if ((bits >> bit) & 1ULL) {
+                result += block_query[bit];
+            }
+        }
+    }
+    return result;
+#endif
 }
 
 inline float mask_ip_x0_q(const float* query, const uint64_t* data, size_t padded_dim) {

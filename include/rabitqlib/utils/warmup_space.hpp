@@ -1,13 +1,17 @@
 #pragma once
 
+#if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
+#endif
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <iostream>
 
 // Helper: AVX2 64-bit Popcount; Mula's method
-inline __m256i popcount_avx2(__m256i v) {
 #if defined(__AVX2__)
+inline __m256i popcount_avx2(__m256i v) {
     // Lookup table for population count of 0-15
     const __m256i lookup = _mm256_setr_epi8(
         0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
@@ -28,11 +32,8 @@ inline __m256i popcount_avx2(__m256i v) {
 
     // Sum bytes horizontally into 64-bit integers (SAD against 0)
     return _mm256_sad_epu8(cnt_bytes, _mm256_setzero_si256());
-#else
-    std::cerr << "AVX2 is required for popcount_avx2\n";
-    exit(1);
-#endif
 }
+#endif
 
 inline float warmup_ip_x0_q_512(
     const uint64_t* data,
@@ -196,8 +197,20 @@ inline float warmup_ip_x0_q_512(
 
     return (delta * static_cast<float>(ip_scalar)) + (vl * static_cast<float>(ppc_scalar));
 #else    
-    std::cerr << "AVX512 VPOPCNTDQ and AVX512BW or AVX2 are required for warmup_ip_x0_q_512\n";
-    exit(1);
+    size_t num_blk = padded_dim / 64;
+    size_t ip_scalar = 0;
+    size_t ppc_scalar = 0;
+
+    for (size_t i = 0; i < num_blk; ++i) {
+        uint64_t x = data[i];
+        ppc_scalar += static_cast<size_t>(__builtin_popcountll(x));
+        for (size_t j = 0; j < b_query; ++j) {
+            ip_scalar +=
+                static_cast<size_t>(__builtin_popcountll(x & query[(j * num_blk) + i])) << j;
+        }
+    }
+
+    return (delta * static_cast<float>(ip_scalar)) + (vl * static_cast<float>(ppc_scalar));
 #endif
 }
 
@@ -326,8 +339,20 @@ inline float warmup_ip_x0_q(
 
     return (delta * static_cast<float>(ip_scalar)) + (vl * static_cast<float>(ppc_scalar));
 #else
-    std::cerr << "AVX512 or AVX2 is required for warmup_ip_x0_q\n";
-    exit(1);
+    const size_t num_blk = padded_dim / 64;
+    size_t ip_scalar = 0;
+    size_t ppc_scalar = 0;
+
+    for (size_t i = 0; i < num_blk; ++i) {
+        const uint64_t x = data[i];
+        ppc_scalar += static_cast<size_t>(__builtin_popcountll(x));
+        for (uint32_t j = 0; j < b_query; j++) {
+            ip_scalar +=
+                static_cast<size_t>(__builtin_popcountll(x & query[j * num_blk + i])) << j;
+        }
+    }
+
+    return (delta * static_cast<float>(ip_scalar)) + (vl * static_cast<float>(ppc_scalar));
 #endif
     return 0.0f;
 }
